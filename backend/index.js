@@ -159,6 +159,10 @@ const port = 5000;
 app.use(express.json());
 app.use(cors());
 
+app.get("/test",(req,res)=>{
+    return({success:true,message:"API Working..."});
+});
+
 app.post("/scrape-products", async (req, res) => {
 
     let browser;
