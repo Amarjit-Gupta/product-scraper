@@ -180,254 +180,224 @@ app.post("/scrape-products", async (req, res) => {
       });
     }
 
+    chromium.setGraphicsMode = false;
+
     browser = await puppeteer.launch({
-      args: chromium.args,
-      executablePath: await chromium.executablePath(),
-      defaultViewport: chromium.defaultViewport,
-      headless: chromium.headless,
+      args: [
+        ...chromium.args,
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+      ],
+
+      executablePath:
+        await chromium.executablePath(),
+
+      defaultViewport:
+        chromium.defaultViewport,
+
+      headless: true,
     });
 
-    const page = await browser.newPage();
+    const page =
+      await browser.newPage();
 
-    await page.goto(websiteUrl, {
-      waitUntil: "domcontentloaded",
-      timeout: 30000,
-    });
+    await page.goto(
+      websiteUrl,
+      {
+        waitUntil:
+          "domcontentloaded",
 
-    const html = await page.content();
+        timeout: 10000,
+      }
+    );
 
-    const $ = cheerio.load(html);
+    const html =
+      await page.content();
 
-    let queue = [];
-    let queued = new Set();
-    let visited = new Set();
-    let products = [];
-
-    $("a").each((i, el) => {
-      const href = $(el).attr("href");
-
-      if (!href) return;
-
-      try {
-        const full = new URL(
-          href,
-          websiteUrl
-        ).href;
-
-        if (!queued.has(full)) {
-          queue.push(full);
-          queued.add(full);
-        }
-      } catch {}
-    });
-
-    const MAX_CONCURRENT = 3;
-    const MAX_PAGES = 40;
-
-    while (
-      queue.length > 0 &&
-      visited.size < MAX_PAGES
-    ) {
-      const batch = queue.splice(
-        0,
-        MAX_CONCURRENT
+    const $ =
+      cheerio.load(
+        html
       );
 
-      const results =
-        await Promise.all(
+    let queue = [];
+    let queued =
+      new Set();
 
-          batch.map(
-            async current => {
+    let visited =
+      new Set();
 
-              if (
-                visited.has(
-                  current
-                )
-              ) {
-                return null;
-              }
+    let products =
+      [];
 
-              visited.add(
-                current
-              );
+    $("a").each(
+      (i, el) => {
+        const href =
+          $(el).attr(
+            "href"
+          );
 
-              let p;
+        if (!href)
+          return;
 
-              try {
-
-                p =
-                  await browser.newPage();
-
-                await p.goto(
-                  current,
-                  {
-                    waitUntil:
-                      "domcontentloaded",
-                    timeout: 10000,
-                  }
-                );
-
-                const pageHtml =
-                  await p.content();
-
-                const $$ =
-                  cheerio.load(
-                    pageHtml
-                  );
-
-                const title =
-                  $$(
-                    "h1,h2,.product-title,.title"
-                  )
-                    .first()
-                    .text()
-                    .trim();
-
-                const description =
-                  $$(
-                    ".description,p,.product-description"
-                  )
-                    .first()
-                    .text()
-                    .trim();
-
-                let image =
-
-                  $$(
-                    'meta[property="og:image"]'
-                  ).attr(
-                    "content"
-                  ) ||
-
-                  $$(
-                    "img"
-                  )
-                    .first()
-                    .attr(
-                      "src"
-                    );
-
-                if (
-                  image &&
-                  !image.startsWith(
-                    "http"
-                  )
-                ) {
-
-                  image =
-                    new URL(
-                      image,
-                      current
-                    ).href;
-                }
-
-                const links = [];
-
-                $$(
-                  "a"
-                ).each(
-                  (i, e) => {
-
-                    const href =
-                      $$(
-                        e
-                      ).attr(
-                        "href"
-                      );
-
-                    if (!href)
-                      return;
-
-                    try {
-
-                      const full =
-                        new URL(
-                          href,
-                          websiteUrl
-                        ).href;
-
-                      if (
-                        !queued.has(
-                          full
-                        )
-                      ) {
-
-                        links.push(
-                          full
-                        );
-
-                        queued.add(
-                          full
-                        );
-                      }
-
-                    } catch {}
-                  }
-                );
-
-                const isProduct =
-
-                  current.includes(
-                    "product"
-                  ) ||
-
-                  current.includes(
-                    "shop"
-                  ) ||
-
-                  current.includes(
-                    "item"
-                  );
-
-                return {
-                  product:
-                    isProduct &&
-                    title
-                      ? {
-                          name:
-                            title,
-                          description,
-                          image,
-                          url:
-                            current,
-                        }
-                      : null,
-
-                  links,
-                };
-
-              } catch {
-                return null;
-
-              } finally {
-
-                if (p)
-                  await p.close();
-
-              }
-            }
-          )
-        );
-
-      results.forEach(
-        item => {
-
-          if (!item)
-            return;
+        try {
+          const full =
+            new URL(
+              href,
+              websiteUrl
+            ).href;
 
           if (
-            item.product
+            !queued.has(
+              full
+            )
           ) {
-            products.push(
-              item.product
+            queue.push(
+              full
+            );
+
+            queued.add(
+              full
             );
           }
 
-          queue.push(
-            ...item.links
-          );
-        }
+        } catch {}
+      }
+    );
+
+    const MAX_CONCURRENT = 1;
+    const MAX_PAGES = 10;
+
+    while (
+      queue.length &&
+      visited.size <
+        MAX_PAGES
+    ) {
+
+      const current =
+        queue.shift();
+
+      if (
+        visited.has(
+          current
+        )
+      )
+        continue;
+
+      visited.add(
+        current
       );
+
+      let p;
+
+      try {
+
+        p =
+          await browser.newPage();
+
+        await p.goto(
+          current,
+          {
+            waitUntil:
+              "domcontentloaded",
+
+            timeout: 5000,
+          }
+        );
+
+        const pageHtml =
+          await p.content();
+
+        const $$ =
+          cheerio.load(
+            pageHtml
+          );
+
+        const title =
+          $$(
+            "h1,h2,.product-title,.title"
+          )
+            .first()
+            .text()
+            .trim();
+
+        const description =
+          $$(
+            ".description,p,.product-description"
+          )
+            .first()
+            .text()
+            .trim();
+
+        let image =
+
+          $$(
+            'meta[property="og:image"]'
+          ).attr(
+            "content"
+          ) ||
+
+          $$(
+            "img"
+          )
+            .first()
+            .attr(
+              "src"
+            );
+
+        if (
+          image &&
+          !image.startsWith(
+            "http"
+          )
+        ) {
+
+          image =
+            new URL(
+              image,
+              current
+            ).href;
+        }
+
+        const isProduct =
+
+          current.includes(
+            "product"
+          ) ||
+
+          current.includes(
+            "shop"
+          ) ||
+
+          current.includes(
+            "item"
+          );
+
+        if (
+          isProduct &&
+          title
+        ) {
+
+          products.push({
+            name:
+              title,
+
+            description,
+
+            image,
+
+            url:
+              current,
+          });
+        }
+
+      } catch {}
+
+      finally {
+
+        if (p)
+          await p.close();
+
+      }
     }
 
     products = [
@@ -435,17 +405,18 @@ app.post("/scrape-products", async (req, res) => {
         products.map(
           p => [
             p.url,
-            p,
+            p
           ]
         )
-      ).values(),
+      ).values()
     ];
 
     return res.json({
       success: true,
       total:
         products.length,
-      products,
+
+      products
     });
 
   } catch (err) {
@@ -457,19 +428,15 @@ app.post("/scrape-products", async (req, res) => {
     ).json({
       success: false,
       error:
-        err.message,
+        err.message
     });
 
   } finally {
 
-    if (browser) {
+    if (browser)
       await browser.close();
-    }
+
   }
 });
 
-const PORT = process.env.PORT || 5000;
-
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+module.exports = app;
