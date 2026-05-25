@@ -1,3 +1,4 @@
+// local
 // const express = require("express");
 // const puppeteer = require("puppeteer");
 // const cheerio = require("cheerio");
@@ -147,386 +148,328 @@
 // app.listen(port, () => console.log(`server is running on port ${port}.`));
 
 
-
+// server
 const express = require("express");
-const puppeteer = require("puppeteer");
+const chromium = require("@sparticuz/chromium");
+const puppeteer = require("puppeteer-core");
 const cheerio = require("cheerio");
 const cors = require("cors");
 
 const app = express();
-const port = 5000;
 
 app.use(express.json());
 app.use(cors());
 
-app.get("/test",(req,res)=>{
-    return({success:true,message:"API Working..."});
+app.get("/test", (req, res) => {
+  res.json({
+    success: true,
+    message: "API Working...",
+  });
 });
 
 app.post("/scrape-products", async (req, res) => {
+  let browser;
 
-    let browser;
+  try {
+    const { websiteUrl } = req.body;
 
-    try {
+    if (!websiteUrl) {
+      return res.status(400).json({
+        success: false,
+        message: "websiteUrl required",
+      });
+    }
 
-        const { websiteUrl } = req.body;
+    browser = await puppeteer.launch({
+      args: chromium.args,
+      executablePath: await chromium.executablePath(),
+      defaultViewport: chromium.defaultViewport,
+      headless: chromium.headless,
+    });
 
-        if (!websiteUrl) {
-            return res.status(400).json({
-                success: false,
-                message: "websiteUrl required"
-            });
+    const page = await browser.newPage();
+
+    await page.goto(websiteUrl, {
+      waitUntil: "domcontentloaded",
+      timeout: 30000,
+    });
+
+    const html = await page.content();
+
+    const $ = cheerio.load(html);
+
+    let queue = [];
+    let queued = new Set();
+    let visited = new Set();
+    let products = [];
+
+    $("a").each((i, el) => {
+      const href = $(el).attr("href");
+
+      if (!href) return;
+
+      try {
+        const full = new URL(
+          href,
+          websiteUrl
+        ).href;
+
+        if (!queued.has(full)) {
+          queue.push(full);
+          queued.add(full);
         }
+      } catch {}
+    });
 
-        browser = await puppeteer.launch({
-            headless: true,
-            args: [
-                "--no-sandbox",
-                "--disable-setuid-sandbox"
-            ]
-        });
+    const MAX_CONCURRENT = 3;
+    const MAX_PAGES = 40;
 
-        const page =
-            await browser.newPage();
+    while (
+      queue.length > 0 &&
+      visited.size < MAX_PAGES
+    ) {
+      const batch = queue.splice(
+        0,
+        MAX_CONCURRENT
+      );
 
-        await page.goto(
-            websiteUrl,
-            {
-                waitUntil:
-                    "domcontentloaded",
-                timeout: 15000
-            }
-        );
+      const results =
+        await Promise.all(
 
-        const html =
-            await page.content();
+          batch.map(
+            async current => {
 
-        const $ =
-            cheerio.load(
-                html
-            );
+              if (
+                visited.has(
+                  current
+                )
+              ) {
+                return null;
+              }
 
-        let queue =
-            [];
+              visited.add(
+                current
+              );
 
-        let queued =
-            new Set();
+              let p;
 
-        let visited =
-            new Set();
+              try {
 
-        $("a").each(
-            (i, el) => {
+                p =
+                  await browser.newPage();
 
-                const href =
-                    $(el).attr(
-                        "href"
+                await p.goto(
+                  current,
+                  {
+                    waitUntil:
+                      "domcontentloaded",
+                    timeout: 10000,
+                  }
+                );
+
+                const pageHtml =
+                  await p.content();
+
+                const $$ =
+                  cheerio.load(
+                    pageHtml
+                  );
+
+                const title =
+                  $$(
+                    "h1,h2,.product-title,.title"
+                  )
+                    .first()
+                    .text()
+                    .trim();
+
+                const description =
+                  $$(
+                    ".description,p,.product-description"
+                  )
+                    .first()
+                    .text()
+                    .trim();
+
+                let image =
+
+                  $$(
+                    'meta[property="og:image"]'
+                  ).attr(
+                    "content"
+                  ) ||
+
+                  $$(
+                    "img"
+                  )
+                    .first()
+                    .attr(
+                      "src"
                     );
 
-                if (!href)
-                    return;
+                if (
+                  image &&
+                  !image.startsWith(
+                    "http"
+                  )
+                ) {
 
-                try {
+                  image =
+                    new URL(
+                      image,
+                      current
+                    ).href;
+                }
 
-                    const full =
+                const links = [];
+
+                $$(
+                  "a"
+                ).each(
+                  (i, e) => {
+
+                    const href =
+                      $$(
+                        e
+                      ).attr(
+                        "href"
+                      );
+
+                    if (!href)
+                      return;
+
+                    try {
+
+                      const full =
                         new URL(
-                            href,
-                            websiteUrl
+                          href,
+                          websiteUrl
                         ).href;
 
-                    if (
+                      if (
                         !queued.has(
-                            full
+                          full
                         )
-                    ) {
+                      ) {
 
-                        queue.push(
-                            full
+                        links.push(
+                          full
                         );
 
                         queued.add(
-                            full
+                          full
                         );
-                    }
+                      }
 
-                } catch {}
+                    } catch {}
+                  }
+                );
+
+                const isProduct =
+
+                  current.includes(
+                    "product"
+                  ) ||
+
+                  current.includes(
+                    "shop"
+                  ) ||
+
+                  current.includes(
+                    "item"
+                  );
+
+                return {
+                  product:
+                    isProduct &&
+                    title
+                      ? {
+                          name:
+                            title,
+                          description,
+                          image,
+                          url:
+                            current,
+                        }
+                      : null,
+
+                  links,
+                };
+
+              } catch {
+                return null;
+
+              } finally {
+
+                if (p)
+                  await p.close();
+
+              }
             }
+          )
         );
 
-        let products =
-            [];
+      results.forEach(
+        item => {
 
-        const MAX_CONCURRENT =
-            10;
+          if (!item)
+            return;
 
-        while (
-            queue.length >
-                0 &&
-            visited.size <
-                100
-        ) {
-
-            const batch =
-                queue.splice(
-                    0,
-                    MAX_CONCURRENT
-                );
-
-            const results =
-                await Promise.all(
-
-                    batch.map(
-                        async current => {
-
-                            if (
-                                visited.has(
-                                    current
-                                )
-                            ) {
-                                return null;
-                            }
-
-                            visited.add(
-                                current
-                            );
-
-                            let p;
-
-                            try {
-
-                                p =
-                                    await browser.newPage();
-
-                                await p.goto(
-                                    current,
-                                    {
-                                        waitUntil:
-                                            "domcontentloaded",
-                                        timeout:
-                                            10000
-                                    }
-                                );
-
-                                const html =
-                                    await p.content();
-
-                                const $$ =
-                                    cheerio.load(
-                                        html
-                                    );
-
-                                const title =
-                                    $$(
-                                        "h1,h2,.product-title,.title"
-                                    )
-                                        .first()
-                                        .text()
-                                        .trim();
-
-                                const description =
-                                    $$(
-                                        ".description,p,.product-description"
-                                    )
-                                        .first()
-                                        .text()
-                                        .trim();
-
-                                let image =
-
-                                    $$(
-                                        'meta[property="og:image"]'
-                                    ).attr(
-                                        "content"
-                                    ) ||
-
-                                    $$(
-                                        ".product img,.product-image img,img"
-                                    )
-                                        .first()
-                                        .attr(
-                                            "src"
-                                        );
-
-                                if (
-                                    image &&
-                                    !image.startsWith(
-                                        "http"
-                                    )
-                                ) {
-
-                                    image =
-                                        new URL(
-                                            image,
-                                            current
-                                        ).href;
-                                }
-
-                                const links =
-                                    [];
-
-                                $$(
-                                    "a"
-                                ).each(
-                                    (
-                                        i,
-                                        e
-                                    ) => {
-
-                                        const href =
-                                            $$(
-                                                e
-                                            ).attr(
-                                                "href"
-                                            );
-
-                                        if (
-                                            !href
-                                        )
-                                            return;
-
-                                        try {
-
-                                            const full =
-                                                new URL(
-                                                    href,
-                                                    websiteUrl
-                                                ).href;
-
-                                            if (
-                                                !queued.has(
-                                                    full
-                                                )
-                                            ) {
-
-                                                links.push(
-                                                    full
-                                                );
-
-                                                queued.add(
-                                                    full
-                                                );
-                                            }
-
-                                        } catch {}
-                                    }
-                                );
-
-                                const isProduct =
-
-                                    current.includes(
-                                        "product"
-                                    ) ||
-
-                                    current.includes(
-                                        "shop"
-                                    ) ||
-
-                                    current.includes(
-                                        "item"
-                                    ) ||
-
-                                    current.includes(
-                                        "collection"
-                                    ) ||
-
-                                    title;
-
-                                return {
-
-                                    product:
-                                        isProduct
-                                            ? {
-                                                name:
-                                                    title,
-
-                                                description,
-
-                                                image,
-
-                                                url:
-                                                    current
-                                            }
-                                            : null,
-
-                                    links
-                                };
-
-                            } catch {
-
-                                return null;
-
-                            } finally {
-
-                                if (p)
-                                    await p.close();
-                            }
-                        }
-                    )
-                );
-
-            results.forEach(
-                item => {
-
-                    if (!item)
-                        return;
-
-                    if (
-                        item.product &&
-                        item.product.name
-                    ) {
-
-                        products.push(
-                            item.product
-                        );
-                    }
-
-                    queue.push(
-                        ...item.links
-                    );
-                }
+          if (
+            item.product
+          ) {
+            products.push(
+              item.product
             );
+          }
+
+          queue.push(
+            ...item.links
+          );
         }
-
-        products =
-            [
-                ...new Map(
-                    products.map(
-                        p => [
-                            p.url,
-                            p
-                        ]
-                    )
-                ).values()
-            ];
-
-        res.json({
-            success: true,
-            total:
-                products.length,
-            products
-        });
-
-    } catch (err) {
-
-        res.status(
-            500
-        ).json({
-            success: false,
-            error:
-                err.message
-        });
-
-    } finally {
-
-        if (browser)
-            await browser.close();
+      );
     }
+
+    products = [
+      ...new Map(
+        products.map(
+          p => [
+            p.url,
+            p,
+          ]
+        )
+      ).values(),
+    ];
+
+    return res.json({
+      success: true,
+      total:
+        products.length,
+      products,
+    });
+
+  } catch (err) {
+
+    console.log(err);
+
+    return res.status(
+      500
+    ).json({
+      success: false,
+      error:
+        err.message,
+    });
+
+  } finally {
+
+    if (browser) {
+      await browser.close();
+    }
+  }
 });
 
-app.listen(
-    port,
-    () =>
-        console.log(
-            `Server running ${port}`
-        )
-);
+const PORT = process.env.PORT || 5000;
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
